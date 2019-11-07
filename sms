@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+#
+# sms : Envoi collaboratif de SMS basé sur Android/Airmore
+# (C) 2019 Jordan Augé <jordan.auge@free.fr>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>. 1
+
+import math
+import sys
+import time
+
+from ipaddress import IPv4Address  # for your IP address
+from pyairmore.request import AirmoreSession  # to create an AirmoreSession
+from pyairmore.services.messaging import MessagingService  # to send messages
+
+simulation = (len(sys.argv) != 2 or not sys.argv[1] == "ok")
+
+DELAY = 0.5 if simulation else 5
+
+# Open files
+numeros = [n.strip().replace(" ", "")  for n in open('NUMEROS.txt').readlines() if n.strip()]
+message = "\n".join(x.strip() for x in open('MESSAGE.txt').readlines() if x.strip())
+participants = [p for p in open('PARTICIPANTS.txt').readlines() if p.strip()]
+
+# Validate message
+if len(message) > 160:
+    print("Message trop long (> 160 caractères)")
+    sys.exit(1)
+
+# Validate working participants
+is_sim = " [SIMULATION]" if simulation else ""
+print("Message envoyé à {} numéros{}".format(len(numeros), is_sim))
+print("")
+print("-" * 80)
+print(message)
+print("-" * 80)
+print("({} caractères)".format(len(message)))
+print("-" * 80)
+print("")
+print("Test des {} participants en cours (attente de validation). Veuillez patienter...".format(len(participants)))
+
+services = dict()
+for participant in participants:
+    participant = participant.strip()
+    ip = IPv4Address(participant)  # let's create an IP address object
+    session = AirmoreSession(ip)
+    if not session.is_server_running:
+        print("  - Participant {}: airmore ne semble pas lancé".format(participant))
+        continue
+    was_accepted = session.request_authorization()
+    if not was_accepted:
+        print("  - Participant {}: pas d'acceptation du téléphone".format(participant))
+        continue
+    print("  - Participant {}: OK".format(participant))
+    service = MessagingService(session)
+    services[participant] = service
+
+# Summary of message assignment
+print("")
+print("Bilan des participants: {}/{}".format(len(services), len(participants)))
+
+if len(services) == 0:
+    sys.exit(1)
+
+total = len(numeros)
+count = math.ceil(len(numeros) / len(services.keys()))
+
+remaining = total
+objective = dict()
+for p, s in services.items():
+    sent = remaining if remaining < count else count
+    print("  - Participant {} : {} SMS".format(p, sent))
+    objective[p] = sent
+    remaining -= sent
+
+if simulation:
+    print("")
+    print("Vous pouvez interrompre la simulation à tout moment avec Ctrl+C")
+print("")
+input("Appuyez sur ENTREE pour continuer, ou Ctrl+C pour quitter")
+print("")
+print("Envoi des SMS en cours... (delay: {} s)".format(DELAY))
+
+iterator = (n for n in numeros)
+
+# SMS sending
+success = open("SUCCES.txt", "w")
+failure = open("ECHEC.txt", "w")
+num_success = 0
+num_failure = 0
+for p, s in services.items():
+    for i in range(0, objective[p]):
+        time.sleep(DELAY)
+        n = next(iterator)
+        print("  - {} -> {}".format(p, n))
+        if simulation:
+            ret = True
+        else:
+            ret = s.send_message(n, message)
+        if ret:
+            print(n, file=success)
+            num_success+=1
+        else:
+            print("ECHEC")
+            print(n, file=failure)
+            num_failure+=1
+        success.flush()
+        failure.flush()
+success.close()
+failure.close()
+
+print("")
+print("Terminé: {} message prévus, {} succès / {} échecs".format(total, num_success, num_failure))
+print("")
+if simulation:
+    print("Lancez './sms ok' pour réellement effectuer l'envoi")
+    print("")
